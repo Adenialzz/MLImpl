@@ -9,8 +9,8 @@ class LayerNorm(nn.Module):
     def __init__(self, num_dims, eps=1e-5):
         super().__init__()
         shape = (num_dims, )
-        self.gamma = nn.Parameter(torch.ones(shape))
-        self.beta = nn.Parameter(torch.zeros(shape))
+        self.weights = nn.Parameter(torch.ones(shape))
+        self.bias = nn.Parameter(torch.zeros(shape))
         self.eps = eps
 
     def forward(self, x):
@@ -18,5 +18,5 @@ class LayerNorm(nn.Module):
         mean = x.mean(-1, keepdim=True)
         var = x.var(-1, keepdim=True, unbiased=False)
         x_hat = (x - mean) / torch.sqrt(var + self.eps)
-        y = self.gamma * x_hat + self.beta
+        y = self.weighs * x_hat + self.bias
         return y
