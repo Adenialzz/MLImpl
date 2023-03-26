@@ -4,10 +4,14 @@ from torch.optim import Adam
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
-from tensorboardX import SummaryWriter
-import os
+from torch.utils.data.distributed import DistributedSampler
 import argparse
+import os
+
+from tensorboardX import SummaryWriter
+from ddp_utils import init_ddp, stop_ddp
 from engine import train, validate
+
 
 class MnistModel(nn.Module):
     def __init__(self):
@@ -39,7 +43,22 @@ def get_cfg():
     return cfg
 
 def main(cfg):
-    model = MnistModel().to(cfg.device)
+    ddp = int(os.environ.get('RANK', -1)) != -1
+    if ddp:
+        device, master_process, seed_offest = init_ddp()
+        # logging, save_ckpt only save on master_process
+    else:
+        device = cfg.device
+        master_process = True
+        seed_offest = 0
+
+    torch.manual_seed(1337 + seed_offest)
+    model = MnistModel().to(device)
+    if ddp:
+        model = torch.nn.parallel.DistributedDataParallel(model)
+
+    raw_model = model.module if ddp else model
+
     optimizer = Adam(model.parameters(), lr=cfg.lr)
     pipeline = transforms.Compose([
         transforms.ToTensor(),
@@ -47,25 +66,29 @@ def main(cfg):
     ])
 
     train_set = torchvision.datasets.MNIST(root=cfg.data_root, train=True, transform=pipeline, download=True)
-    train_loader = DataLoader(train_set, batch_size=cfg.batch_size, shuffle=True)
+    train_sampler = DistributedSampler(train_set) if ddp else None
+    train_loader = DataLoader(train_set, batch_size=cfg.batch_size, shuffle=not ddp, sampler=train_sampler)
     test_set = torchvision.datasets.MNIST(root=cfg.data_root, train=False, transform=pipeline, download=True)
     test_loader = DataLoader(test_set, batch_size=cfg.batch_size, shuffle=False)
 
     writer = SummaryWriter(cfg.writer_dir)
-    os.makedirs(cfg.out_dir, exist_ok=True)
+    if master_process:
+        os.makedirs(cfg.out_dir, exist_ok=True)
     for e in range(cfg.epochs):
-        train_loss = train(e, model, optimizer, train_loader, cfg.device)
-        val_loss, val_acc = validate(e, model, test_loader, cfg.device)
-        writer.add_scalars('loss', {'train_loss': train_loss, 'val_loss': val_loss}, e)
-        writer.add_scalar('val acc', val_acc, e)
-        checkpoint = {
-            'state_dict': model.state_dict(),
-            'optimizer': optimizer.state_dict(),
-            'train_cfg': cfg
-        }
-        torch.save(checkpoint, os.path.join(cfg.out_dir, f'ckpt_e{e}.pth'))
-
+        train_loss = train(e, model, optimizer, train_loader, device, master_process)
+        if master_process:  # only log and save checkpoint on master_process
+            val_loss, val_acc = validate(e, model, test_loader, device)
+            writer.add_scalars('loss', {'train_loss': train_loss, 'val_loss': val_loss}, e)
+            writer.add_scalar('val acc', val_acc, e)
+            checkpoint = {
+                'state_dict': raw_model.state_dict(),  # remove key name prefix `.module`
+                'optimizer': optimizer.state_dict(),
+                'train_cfg': cfg
+            }
+            torch.save(checkpoint, os.path.join(cfg.out_dir, f'ckpt_e{e}.pth'))
     
+    if ddp:
+        stop_ddp()
 
 if __name__ == '__main__':
     cfg = get_cfg()

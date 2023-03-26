@@ -10,6 +10,8 @@ __pycache__/
 *.pkl
 
 # logs
+log/
+out/
 *.log
 *.out
 
