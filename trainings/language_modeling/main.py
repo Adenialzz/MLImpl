@@ -11,9 +11,9 @@ from utils import load_vocab, load_gpt_model
 def get_cfg():
     parser = argparse.ArgumentParser()
     # misc
-    parser.add_argument('--data_dir', type=str, default='data/data/shakespeare')
+    parser.add_argument('--data_dir', type=str, default='data/shakespeare')
     parser.add_argument('--meta_path', type=str, default='')
-    parser.add_argument('--out_dir', type=str, default='test_out/')
+    parser.add_argument('--out_dir', type=str, default='out/')
     parser.add_argument('--no_lr_decay', action='store_false')
     parser.add_argument('--init_from', type=str, default='scratch', choices=('scratch', 'resume', 'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'))
     parser.add_argument('--device', type=str, default='cuda')
