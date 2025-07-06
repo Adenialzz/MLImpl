@@ -2,12 +2,14 @@
 # python
 __pycache__/
 
-# bins
+# models
 *.bin
 *.npy
 *.pt
 *.pth
 *.pkl
+*.safetensors
+hf_models/
 
 # logs
 log/
