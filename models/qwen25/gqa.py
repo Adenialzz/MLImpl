@@ -17,8 +17,8 @@ class RMSNorm(nn.Module):
         x = x * torch.rsqrt(var + self.eps)
         return (self.weight * x).to(x_dtype)
 
-class SwiGLU(nn.Module):
-    def __init__(self, dim, immediate_dim, bias=False):
+class MLP(nn.Module):
+    def __init__(self, dim, immediate_dim, bias=False, act_func='silu'):
         super().__init__()
         self.up_proj = nn.Linear(dim, immediate_dim, bias=bias)
         self.down_proj = nn.Linear(immediate_dim, dim, bias=bias)
@@ -93,7 +93,7 @@ class Block(nn.Module):
         super().__init__()
 
         self.self_attn = CausalGroupQueryAttention(hidden_dim, num_attention_heads, num_key_value_heads)
-        self.mlp = SwiGLU(hidden_dim, immediate_dim)
+        self.mlp = MLP(hidden_dim, immediate_dim)
         self.input_layernorm = RMSNorm(hidden_dim)
         self.post_attention_layernorm = RMSNorm(hidden_dim)
 

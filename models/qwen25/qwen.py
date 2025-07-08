@@ -6,28 +6,40 @@ from gqa import Block, RMSNorm
 from rope import _compute_rope_params
 
 class Qwen2_5(nn.Module):
-    def __init__(self, config: Qwen2Config):
+    def __init__(
+        self,
+        max_position_embeddings,
+        vocab_size,
+        hidden_size,
+        num_attention_heads,
+        num_key_value_heads,
+        intermediate_size,
+        num_hidden_layers,
+        rope_theta,
+        tie_word_embeddings=True,
+        **kwargs  # 其他额外参数
+    ):
         super().__init__()
 
-        self.block_size = config.max_position_embeddings
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.block_size = max_position_embeddings
+        self.embed_tokens = nn.Embedding(vocab_size, hidden_size)
         self.layers = nn.ModuleList([
             Block(
-                hidden_dim=config.hidden_size,
-                num_attention_heads=config.num_attention_heads,
-                num_key_value_heads=config.num_key_value_heads,
-                immediate_dim=config.intermediate_size
+                hidden_dim=hidden_size,
+                num_attention_heads=num_attention_heads,
+                num_key_value_heads=num_key_value_heads,
+                immediate_dim=intermediate_size
             )
-            for _ in range(config.num_hidden_layers)
+            for _ in range(num_hidden_layers)
         ])
 
-        self.norm = RMSNorm(config.hidden_size)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.norm = RMSNorm(hidden_size)
+        self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
 
-        if config.tie_word_embeddings:
+        if tie_word_embeddings:
             self.embed_tokens.weight = self.lm_head.weight      # 这应该在加载权重之后吧，而且是不是反了？我看 qwen 开源权重里只有前者
 
-        cos_cached, sin_cached = _compute_rope_params(base=config.rope_theta, rope_dim=config.hidden_size//config.num_attention_heads, max_position_embeddings=config.max_position_embeddings)
+        cos_cached, sin_cached = _compute_rope_params(base=rope_theta, rope_dim=hidden_size//num_attention_heads, max_position_embeddings=max_position_embeddings)
 
         self.register_buffer('cos_cached', cos_cached)
         self.register_buffer('sin_cached', sin_cached)

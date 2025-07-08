@@ -8,8 +8,7 @@ model_root = 'hf_models/qwen25_0_5b_instruct'
 device = 'cuda'
 
 config = Qwen2Config.from_pretrained(model_root)
-print(config)
-model = Qwen2_5(config).to(device)
+model = Qwen2_5(**config.to_dict()).to(device)
 model = model.eval().requires_grad_(False)
 
 state_dict = load_file(os.path.join(model_root, 'model.safetensors'), device=device)
