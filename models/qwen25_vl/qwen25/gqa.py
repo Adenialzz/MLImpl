@@ -2,7 +2,7 @@ import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
 import math
-from rope import apply_rotary_pos_emb
+from .rope import apply_rotary_pos_emb, apply_multimodal_rotary_pos_emb
 
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-6):
@@ -63,6 +63,8 @@ class CausalGroupQueryAttention(nn.Module):
 
         self.o_proj = nn.Linear(hidden_dim, hidden_dim, bias=proj_bias)
 
+        self.rop_apply_func = apply_rotary_pos_emb      # 可修改，支持后续扩展 Qwen25 VL Multimodal 3D RoPE
+
     def forward(self, x, cos=None, sin=None):
         B, T, D = x.shape
 
@@ -71,7 +73,7 @@ class CausalGroupQueryAttention(nn.Module):
         v = self.v_proj(x).view(B, T, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         if cos is not None and sin is not None:
-            q, k = apply_rotary_pos_emb(q, k, cos, sin)
+            q, k = self.rop_apply_func(q, k, cos, sin)
 
         attn = q @ repeat_kv(k, self.num_key_value_groups).transpose(-1, -2) / math.sqrt(self.head_dim)
 

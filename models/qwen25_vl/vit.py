@@ -139,12 +139,13 @@ class VisionAttention(nn.Module):
         q, k = apply_rotary_pos_emb_vision(q, k, cos, sin)
 
         attention_mask = torch.full(
-            [1, seq_length, seq_length], torch.finfo(q.dtype).min,         # torch.finfo 返回浮点数类型信息，这里失去了 q.dtype 类型的最小值，其实就是 -float('inf')
+            [1, seq_length, seq_length],
+            torch.finfo(q.dtype).min,         # torch.finfo 返回浮点数类型信息，这里是取了 q.dtype 类型的最小值，其实就是 -float('inf')
             device=q.device, dtype=q.dtype
         )
 
         for i in range(1, len(cu_seqlens)):
-            attention_mask[..., cu_seqlens[i-1]: cu_seqlens[i], cu_seqlens[i-1]: cu_seqlens[i]]      
+            attention_mask[..., cu_seqlens[i-1]: cu_seqlens[i], cu_seqlens[i-1]: cu_seqlens[i]] = 0
             # NaViT Attention mask 区分不同图片 和 windown attention mask 区分不同滑窗
             # 但是这样用 mask 实现 window attention 实际上并没有减少计算量啊 https://github.com/QwenLM/Qwen2.5-VL/issues/1049
 
@@ -169,7 +170,7 @@ class VisionBlock(nn.Module):
         self.norm1 = RMSNorm(hidden_size, eps=1e-6)
         self.norm2 = RMSNorm(hidden_size, eps=1e-6)
         self.attn = VisionAttention(hidden_size, num_heads)
-        self.mlp = MLP(hidden_size, immediate_dim, bias=False)
+        self.mlp = MLP(hidden_size, immediate_dim, bias=True)
 
     def forward(
         self,
@@ -233,113 +234,76 @@ class VisionTransformer(nn.Module):
             spatial_merge_size=spatial_merge_size
         )
 
-    def rot_pos_emb(self, grid_thw: Tensor):
+    
+    def rot_pos_emb(self, grid_thw):
         pos_ids = []
-        for t, h, w in grid_thw:     # 取每张图的 t，h，w
-            hpos_ids = torch.arange(h).unsqueeze(1).expand(-1, w)     # [h, w]
+        for t, h, w in grid_thw:
+            hpos_ids = torch.arange(h).unsqueeze(1).expand(-1, w)
             hpos_ids = hpos_ids.reshape(
                 h // self.spatial_merge_size,
                 self.spatial_merge_size,
                 w // self.spatial_merge_size,
-                self.spatial_merge_size
+                self.spatial_merge_size,
             )
-            hpos_ids = hpos_ids.permute(0, 2, 1, 3)     # h//2, w//2, 2, 2
+            hpos_ids = hpos_ids.permute(0, 2, 1, 3)
             hpos_ids = hpos_ids.flatten()
 
-            wpos_ids = torch.arange(w).unsqueeze(1).expand(-1, h)     # [w, h]
+            wpos_ids = torch.arange(w).unsqueeze(0).expand(h, -1)
             wpos_ids = wpos_ids.reshape(
                 h // self.spatial_merge_size,
                 self.spatial_merge_size,
                 w // self.spatial_merge_size,
-                self.spatial_merge_size
+                self.spatial_merge_size,
             )
-            wpos_ids = wpos_ids.permute(0, 2, 1, 3)     # h//2, w//2, 2, 2
+            wpos_ids = wpos_ids.permute(0, 2, 1, 3)
             wpos_ids = wpos_ids.flatten()
-
-            pos_ids.append(
-                torch.stack([hpos_ids, wpos_ids], dim=1).repeat(t, 1)
-            )
-
+            pos_ids.append(torch.stack([hpos_ids, wpos_ids], dim=-1).repeat(t, 1))
         pos_ids = torch.cat(pos_ids, dim=0)
-        max_grid_size = grid_thw[:, 1:].max()      # 宽高里的最大者
-        rotary_pos_emb_full = self.rotary_pos_emb(max_grid_size)   # freqs
+        max_grid_size = grid_thw[:, 1:].max()
+        rotary_pos_emb_full = self.rotary_pos_emb(max_grid_size)
         rotary_pos_emb = rotary_pos_emb_full[pos_ids].flatten(1)
-
         return rotary_pos_emb
-        
-    def get_window_index(self, grid_thw):
-        window_index = []
-        cu_window_seqlens = [0]
-        window_index_id = 0
 
+    def get_window_index(self, grid_thw):
+        window_index: list = []
+        cu_window_seqlens: list = [0]
+        window_index_id = 0
         vit_merger_window_size = self.window_size // self.spatial_merge_size // self.patch_size
-        
-        for grid_t, grid_h, grid_w in grid_thw:      # 每张图或视频的 t，h，w
+
+        for grid_t, grid_h, grid_w in grid_thw:
             llm_grid_h, llm_grid_w = (
                 grid_h // self.spatial_merge_size,
-                grid_w // self.spatial_merge_size
+                grid_w // self.spatial_merge_size,
             )
-            print(llm_grid_w, llm_grid_h)
-
             index = torch.arange(grid_t * llm_grid_h * llm_grid_w).reshape(grid_t, llm_grid_h, llm_grid_w)
-
             pad_h = vit_merger_window_size - llm_grid_h % vit_merger_window_size
             pad_w = vit_merger_window_size - llm_grid_w % vit_merger_window_size
             num_windows_h = (llm_grid_h + pad_h) // vit_merger_window_size
             num_windows_w = (llm_grid_w + pad_w) // vit_merger_window_size
-
-            index_padded = F.pad(index, (0, pad_w, 0, pad_h), 'constant', -100)
+            index_padded = F.pad(index, (0, pad_w, 0, pad_h), "constant", -100)
             index_padded = index_padded.reshape(
                 grid_t,
                 num_windows_h,
                 vit_merger_window_size,
                 num_windows_w,
-                vit_merger_window_size
+                vit_merger_window_size,
             )
-
             index_padded = index_padded.permute(0, 1, 3, 2, 4).reshape(
                 grid_t,
                 num_windows_h * num_windows_w,
                 vit_merger_window_size,
-                vit_merger_window_size
+                vit_merger_window_size,
             )
-
             seqlens = (index_padded != -100).sum([2, 3]).reshape(-1)
             index_padded = index_padded.reshape(-1)
             index_new = index_padded[index_padded != -100]
             window_index.append(index_new + window_index_id)
             cu_seqlens_tmp = seqlens.cumsum(0) * self.spatial_merge_unit + cu_window_seqlens[-1]
-
             cu_window_seqlens.extend(cu_seqlens_tmp.tolist())
-
             window_index_id += (grid_t * llm_grid_h * llm_grid_w).item()
-
         window_index = torch.cat(window_index, dim=0)
 
         return window_index, cu_window_seqlens
-
-
-    # def _prepare_attention_mask(self, input_tesnors, cu_seqlens):
-    #     # Flash Attention 2 doesn't need a 4D mask and relies on `cu_seqlens/max_seqlen`
-    #     # NOTE: the created attention masl only approximates the ragged FA2 attention by
-    #     # allowing bidirectional attention within `cu_seqlens` blocks, and not attending between
-    #     # blocks. Though it will not be a 100% match for FA2's `varlen` path
-
-    #     # 如果用 FA2 的 attn impl 直接返回 None 就行。别的需要这个
-    #     # NaViT 不同样本隔离 和 window attention 不同窗口隔离
-
-    #     seq_length = input_tesnors.shape[0]
-    #     attention_mask = torch.full(
-    #         [1, 1, seq_length, seq_length],
-    #         torch.finfo(input_tesnors.dtype).min,
-    #         device=input_tesnors.device,
-    #         dtype=input_tesnors.dtype
-    #     )
-    #     for i in range(1, len(cu_seqlens)):
-    #         attention_mask[..., cu_seqlens[i-1]: cu_seqlens[i], cu_seqlens[i-1]: cu_seqlens[i]] = 0
-
-    #     return attention_mask
-            
 
 
 
@@ -358,19 +322,17 @@ class VisionTransformer(nn.Module):
             `torch.Tensor`: hidden_states.
         """
 
-        print(hidden_states.shape, grid_thw.shape)
-        hidden_states = self.patch_embed(hidden_states)     # (seq_len, 1176)  ---> (seq_len, hidden_size)
+        hidden_states = self.patch_embed(hidden_states)     # (seq_len, 1176)  ---[3D Conv]--> (seq_len, hidden_size)
         rotary_pos_emb = self.rot_pos_emb(grid_thw)
 
         window_index, cu_window_seqlens = self.get_window_index(grid_thw)
 
         cu_window_seqlens = torch.tensor(cu_window_seqlens, device=hidden_states.device, dtype=torch.int32)
         cu_window_seqlens = torch.unique_consecutive(cu_window_seqlens)
-        print(cu_window_seqlens.shape, window_index.shape)
 
 
         seq_len, _ = hidden_states.size()
-        # 变换一下
+        # 变换一下 为了做 window attention ？
         hidden_states = hidden_states.reshape(seq_len // self.spatial_merge_unit, self.spatial_merge_unit, -1)
         hidden_states = hidden_states[window_index, :, :]
         hidden_states = hidden_states.reshape(seq_len, -1)
@@ -406,27 +368,11 @@ class VisionTransformer(nn.Module):
         hidden_states = hidden_states[reverse_indices, :]
         return hidden_states
 
-
-
-
-
-
-
-        
-
-
-
-
-        
-
-
-        
-
         
 
 if __name__ == '__main__':
 
-    model_path = '/mnt/data/user/tc_ai/klara/models/open_mllm/qwen25_vl_7b/train-model/'
+    model_path = '/mnt/data/user/tc_ai/klara/models/open_mllm/qwen25_vl_3b/train-model/'
     config: Qwen2_5_VLConfig = Qwen2_5_VLConfig.from_pretrained(model_path)
     # print(config.vision_config)
 

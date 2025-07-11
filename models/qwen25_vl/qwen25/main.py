@@ -1,6 +1,6 @@
 import os
 from transformers import Qwen2Config, AutoTokenizer
-from qwen import Qwen2_5
+from .qwen import Qwen2_5
 from safetensors.torch import load_file
 
 # model_root = 'Qwen/Qwen2.5-0.5B'
