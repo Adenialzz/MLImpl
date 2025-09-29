@@ -12,10 +12,10 @@ for ms in "${model_specs[@]}"; do
     model_path="${!key}"
 
     echo "Qwen3 $ms nanovllm"
-    python bench.py --model_path $model_path --engine nanovllm > nanovllm_$ms.log
+    python bench.py --model_path $model_path --tp 1 --engine nanovllm > nanovllm_$ms.log
 
     echo "Qwen3 $ms vllm"
-    python bench.py --model_path $model_path --engine vllm > vllm_$ms.log
+    python bench.py --model_path $model_path --tp 1 --engine vllm > vllm_$ms.log
 
     echo "**********************************"
 done
