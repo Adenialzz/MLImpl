@@ -41,7 +41,7 @@ class RLHFPPOTrainer:
         gae_lambda: float = 1.0,
         beta: float = 0.05,
         save_steps: int = 50,
-        log_stesp: int = 1,
+        log_steps: int = 1,
         log_smoothing_val: float = 0.95,
         working_dir: str = 'workspace'
     ):
@@ -76,7 +76,7 @@ class RLHFPPOTrainer:
         self.gae_lambda = gae_lambda
         self.beta = beta
         self.save_steps = save_steps
-        self.log_steps = log_stesp
+        self.log_steps = log_steps
         self.log_smoothing_val = log_smoothing_val
         self.working_dir = working_dir
 
@@ -94,8 +94,11 @@ class RLHFPPOTrainer:
         self.reference = Actor(self.reference_model, pad_token_id=actor_pad_token_id, max_length=self.max_episode_length)
         self.env = env
 
-        def naive_logprob_augmenter(buf: Buffer) -> None:       # pi_\theta 和 pi_ref 的 KL 散度
-            buf.reward_augmentation_buffer[:, :] = -((buf.pi_t_logprobs_buffer - buf.pi_0_logprobs_buffer) ** 2)/2
+        def naive_logprob_augmenter(buf: Buffer) -> None:
+            # KL(pi_theta || pi_ref) 的 k3 估计 (Schulman): exp(-Δ) - 1 + Δ, Δ = logπ_θ - logπ_ref
+            # 无偏、恒非负、方差小。作为负奖励叠到 reward 上，trainer 中: aug_reward = reward + β * (此项)
+            delta = buf.pi_t_logprobs_buffer - buf.pi_0_logprobs_buffer
+            buf.reward_augmentation_buffer[:, :] = -(torch.exp(-delta) - 1 + delta)
 
         self.buffer = Buffer(
             max_episodes=self.rollout_batch_size * self.rollout_batches_per_epoch,   # buffer size = rollout_batch_size * rollout_batches_per_epoch
@@ -216,7 +219,9 @@ class RLHFPPOTrainer:
                 average_actor_loss_info = defaultdict(list)
                 for batch_idx, buf_data in enumerate(actor_train_batches):
                     actor_loss, actor_loss_info = self.compute_actor_loss(buf_data)
-                    actor_loss.backward()       # 多次 backward，梯度累积
+                    self.actor_optimizer.zero_grad()
+                    actor_loss.backward()
+                    self.actor_optimizer.step()     # 每个 mini-batch 都 step，pi_\theta 才会逐步偏离 pi_\theta_old，clip 才生效
 
                     for k, v in actor_loss_info.items():
                         average_actor_loss_info[k].append(v)
@@ -225,14 +230,12 @@ class RLHFPPOTrainer:
                     v_avg = sum(v) / len(v)
                     all_metrics[k].append(v_avg)
                     self.summary_writer.add_scalar(f"actor-{k}", v_avg, actor_train_step + epoch * self.actor_train_iters)
-                    
+
+                # 一个 PPO epoch 跑完后判断 KL，超过阈值则提前停止后续 PPO epoch
                 avg_kl = torch.tensor(average_actor_loss_info['kld_t-1']).mean().item()
                 if avg_kl > 1.5 * self.target_kl:
                     print(f'(Epoch:{epoch} actor iter: {actor_train_step}) Early stopping due to kl of ~', avg_kl)
                     break
-
-                self.actor_optimizer.step()
-                self.actor_optimizer.zero_grad()
 
             self.actor_lr_scheduler.step()
 
@@ -243,9 +246,10 @@ class RLHFPPOTrainer:
 
                 average_critic_loss_info = defaultdict(list)
                 for batch_idx, buf_data in enumerate(critic_train_batches):
-                    # print(f'Getting critic loss for step {critic_train_step} and batch {batch_idx}')
                     critic_loss, critic_loss_info = self.compute_critic_loss(buf_data)
+                    self.critic_optimizer.zero_grad()
                     critic_loss.backward()
+                    self.critic_optimizer.step()
 
                     for k, v in critic_loss_info.items():
                         average_critic_loss_info[k].append(v)
@@ -254,10 +258,7 @@ class RLHFPPOTrainer:
                     v_avg = sum(v) / len(v)
                     all_metrics[k].append(v_avg)
                     self.summary_writer.add_scalar(f"critic-{k}", v_avg, critic_train_step + epoch * self.critic_train_iters)
-                    
-                self.critic_optimizer.step()
-                self.critic_optimizer.zero_grad()
-                
+
             self.critic_lr_scheduler.step()
 
             # Logging

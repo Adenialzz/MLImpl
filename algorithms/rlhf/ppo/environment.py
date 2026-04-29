@@ -23,7 +23,7 @@ class RLHFEnvironment:
 
         for output_id, mask in zip(output_ids, full_mask):
             ids = output_id.masked_select(mask.to(torch.bool))
-            texts.append(self.tokenizer.decode(ids, skip_special_token=True))
+            texts.append(self.tokenizer.decode(ids, skip_special_tokens=True))
         
         scores = [self.score_generation(text) for text in texts]
 

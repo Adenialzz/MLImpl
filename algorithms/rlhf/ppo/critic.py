@@ -12,7 +12,7 @@ class Critic:
 
         attention_mask = logical_or_without_broadcasting(input_mask, output_mask)
         outputs = self.model(output_ids, attention_mask=attention_mask)
-        return outputs.logits.squeeze()
+        return outputs.logits.squeeze(-1)   # 只压 value head 维 (B, L, 1) -> (B, L)，避免 batch=1 时把 batch 维也吞掉
 
     def to(self, device):
         self.model.to(device)

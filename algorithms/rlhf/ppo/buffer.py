@@ -127,9 +127,12 @@ class Buffer:
         self._compute_critic_targets(gamma)              # will fill critic targets buffer
         self._compute_advantages(gamma, gae_lambda)      # will fill advantages buffer
         
-        # Normalise advantages to zero mean and variance
-        mu, sigma = self.advantages_buffer.mean(dim=-1).unsqueeze(-1), self.advantages_buffer.std(dim=-1).unsqueeze(-1)
-        self.advantages_buffer = (self.advantages_buffer - mu) / sigma
+        # 全局 token-level advantage 归一化：把整个 buffer 里 completion_mask=1 的 token 当成一个池子算 mu/sigma
+        # 注意不要按 dim=-1 (per-episode) 归一化，否则会抹掉 episode 之间的相对优劣（RLHF 稀疏奖励下尤其糟）
+        mask = self.completion_mask_buffer.to(torch.bool)
+        valid_adv = self.advantages_buffer[mask]
+        mu, sigma = valid_adv.mean(), valid_adv.std()
+        self.advantages_buffer = (self.advantages_buffer - mu) / (sigma + 1e-8)
         
         for start_idx in range(0, self.max_episodes, batch_size):
             end_idx = start_idx + batch_size
@@ -192,4 +195,4 @@ class Buffer:
 
 
 def default_reward_augmenter(buf: Buffer) -> None:
-    buf.reward_aumentation_buffer[:, :] = 0
+    buf.reward_augmentation_buffer[:, :] = 0
